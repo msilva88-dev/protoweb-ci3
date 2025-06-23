@@ -1,0 +1,362 @@
+--- simplefile.php	2025-05-02 21:05:32.904569788 -0300
++++ simplefile_bad1.php	2025-05-08 19:24:27.427539436 -0300
+@@ -49,20 +49,56 @@
+  * @since 2025
+  */
+ 
++// Ensure no output buffering
++while (ob_get_level()) ob_end_clean();
++
++ob_implicit_flush(true);
++
+ $logFile = "/tmp/simplefilechat.log";
+ $userMapFile = "/tmp/simplefilechat_users.json";
+ $lastSize = 0;
+ 
+ // Create files if these don't exist
+-if (!file_exists($logFile)) touch($logFile);
+-if (!file_exists($userMapFile)) {
+-    file_put_contents($userMapFile, json_encode([], JSON_PRETTY_PRINT));
++try {
++    if (!file_exists($logFile)) touch($logFile);
++    if (!file_exists($userMapFile)) {
++        file_put_contents($userMapFile, json_encode([], JSON_PRETTY_PRINT));
++    }
++} catch (Throwable $e) {
++    fwrite(STDERR, "Error initializing files: {$e->getMessage()}" . PHP_EOL);
++    exit(1);
+ }
+ 
+ // Open STDIN as a stream
+ $stdin = fopen("php://stdin", "r");
+ stream_set_blocking($stdin, false);
+ 
++function restoreNameFromUserMap(array $entry, array $userMap): void {
++    // Restore receiver_name from userMap
++    if (isset($userMap[(string)($entry["receiver_id"] ?? "")])) {
++        $entry["receiver_name"] =
++            $userMap[(string)$entry["receiver_id"]];
++    }
++
++    // Restore sender_name from userMap
++    $entry["sender_name"] =
++        $userMap[(string)($entry["sender_id"] ?? "")] ?? "guest";
++
++    $json = json_encode($entry);
++
++    if ($json !== false) {
++        echo $json . PHP_EOL;
++
++        flush();
++        fflush(STDOUT);
++    } else {
++        fwrite(
++            STDERR,
++            "JSON encode error (output): " . json_last_error_msg() . PHP_EOL
++        );
++    }
++}
++
+ // Main loop
+ while (true) {
+     // 1. Check for new input from client (WebSocket)
+@@ -72,17 +108,22 @@
+     $hasInput = stream_select($read, $write, $except, 0, 200000);
+ 
+     if ($hasInput && in_array($stdin, $read)) {
+-        $line = fgets($stdin);
+-        if ($line !== false) {
+-            $data = json_decode(trim($line), true);
++        try {
++            $line = fgets($stdin);
++            if ($line === false) continue 1;
+ 
+-            if (!is_array($data)) continue;
++            $data = json_decode(trim($line), true);
++            if (!is_array($data)) continue 1;
+ 
+             $action = $data["action"] ?? "";
++            // Read and update the user map
++            $userMap = file_exists($userMapFile)
++                ? json_decode(file_get_contents($userMapFile), true) ?? []
++                : [];
+ 
+             if (
+-                $action === "insert" &&
+-                isset(
++                $action === "insert"
++                && isset(
+                     $data["booking_no"],
+                     $data["message"],
+                     $data["receiver_id"],
+@@ -90,15 +131,10 @@
+                     $data["sender_name"] // only for guile
+                 )
+             ) {
+-                // Read and update the user map
+-                $userMap = file_exists($userMapFile)
+-                    ? json_decode(file_get_contents($userMapFile), true) ?? []
+-                    : [];
+-
++                $nameTaken = false;
+                 $receiverName = trim($data["receiver_name"] ?? "");
+                 $userId = (string)$data["sender_id"];
+                 $userName = trim($data["sender_name"]);
+-                $nameTaken = false;
+ 
+                 if (
+                     !array_key_exists((string)$data["receiver_id"], $userMap)
+@@ -131,79 +167,204 @@
+                 if (!$nameTaken) {
+                     $userMap[$userId] = $userName;
+ 
+-                    file_put_contents(
+-                        $userMapFile,
+-                        json_encode($userMap, JSON_PRETTY_PRINT)
+-                    );
++                    if ($fpMap = fopen($userMapFile, "c+")) {
++                        if (flock($fpMap, LOCK_EX)) {
++                            $jsonMap =
++                                json_encode($userMap, JSON_PRETTY_PRINT);
++
++                            ftruncate($fpMap, 0);
++                            rewind($fpMap);
++
++                            if ($jsonMap !== false) {
++                                fwrite($fpMap, $jsonMap);
++                            } else {
++                                fwrite(
++                                    STDERR,
++                                    "JSON encode error (userMap): "
++                                    . json_last_error_msg() . PHP_EOL
++                                );
++                            }
++
++                            fflush($fpMap);
++                            flock($fpMap, LOCK_UN);
++                        }
++
++                        fclose($fpMap);
++                    }
+                 }
+ 
+                 // Safely assign a unique ID
+-                $fp = fopen($logFile, "c+"); // Open as read and write
+-                if (flock($fp, LOCK_EX)) {
+-                    $maxId = 0;
+-                    while (($line = fgets($fp)) !== false) {
++                // Open as read and write
++                if ($fp = fopen($logFile, "c+")) {
++                    if (flock($fp, LOCK_EX)) {
++                        $maxId = 0;
++
++                        while (($line = fgets($fp)) !== false) {
++                            $entry = json_decode(trim($line), true);
++
++                            if (
++                                isset($entry["id"])
++                                && is_numeric($entry["id"])
++                            ) {
++                                $maxId = max($maxId, (int)$entry["id"]);
++                            }
++                        }
++
++                        $data = [
++                            "id" => $maxId + 1,
++                            "booking_no" => $data["booking_no"],
++                            "created_at" => date("Y-m-d H:i:s"),
++                            "receiver_id" => $data["receiver_id"],
++                            "sender_id" => $data["sender_id"],
++                            "message" => $data["message"]
++                        ];
++                        $json = json_encode($data);
++
++                        fseek($fp, 0, SEEK_END);
++
++                        if ($json !== false) {
++                            fwrite($fp, $json . PHP_EOL);
++                        } else {
++                            fwrite(
++                                STDERR,
++                                "JSON encode error (insert): "
++                                . json_last_error_msg() . PHP_EOL
++                            );
++                        }
++
++                        fflush($fp);
++                        flock($fp, LOCK_UN);
++                    }
++
++                    fclose($fp);
++                }
++            elseif (
++                $action === "modify"
++                && isset($data["id"], $data["message"], $data["sender_id"])
++            ) {
++                $newMessage = trim($data["message"]);
++                $messageId = (int)$data["id"];
++                $senderId = (int)$data["sender_id"];
++
++                if ($messageId > 0 && $newMessage !== "") {
++                    $entry = null;
++                    $lines = file(
++                        $logFile,
++                        FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES
++                    );
++                    $updated = false;
++
++                    if (!is_array($lines)) {
++                        fwrite(
++                            STDERR,
++                            "Failed to read lines from log file." . PHP_EOL
++                        );
++
++                        continue 1;
++                    }
++
++                    foreach ($lines as $i => $line) {
+                         $entry = json_decode(trim($line), true);
+-                        if (isset($entry["id"]) && is_numeric($entry["id"])) {
+-                            $maxId = max($maxId, (int)$entry["id"]);
++
++                        if (
++                            is_array($entry)
++                            && isset($entry["id"], $entry["sender_id"])
++                            && (int)$entry["id"] === $messageId
++                            && (int)$entry["sender_id"] === $senderId
++                        ) {
++                            $entry["message"] = $newMessage;
++                            $json = json_encode($entry);
++
++                            if ($json !== false) {
++                                $lines[$i] = $json;
++                                $updated = true;
++                            } else {
++                                fwrite(
++                                    STDERR,
++                                    "JSON encode error (modify): "
++                                    . json_last_error_msg() . PHP_EOL
++                                );
++                            }
++
++                            break;
+                         }
+                     }
+ 
+-                    $data =
+-                        ["id" => $maxId + 1]
+-                        + ["booking_no" => $data["booking_no"]]
+-                        + ["created_at" => date("Y-m-d H:i:s")]
+-                        + ["receiver_id" => $data["receiver_id"]]
+-                        + ["sender_id" => $data["sender_id"]]
+-                        + ["message" => $data["message"]];
++                    if ($updated) {
++                        file_put_contents(
++                            $logFile,
++                            implode(PHP_EOL, $lines) . PHP_EOL,
++                            LOCK_EX
++                        );
+ 
+-                    fseek($fp, 0, SEEK_END);
+-                    fwrite($fp, json_encode($data) . PHP_EOL);
+-                    fflush($fp);
+-                    flock($fp, LOCK_UN);
++                        // Restore {receiver,sender}_name from userMap
++                        restoreNameFromUserMap($entry, $userMap);
++                    }
+                 }
+-                fclose($fp);
++
++                continue 1; // Skip the rest of loop
+             }
++        } catch (Throwable $e) {
++            /*
++             * Catch any runtime errors from input processing
++             * (JSON decoding, logic, file access)
++             * and continue to the next WebSocket message
++             * in the main loop.
++             */
++            fwrite(STDERR, "Runtime error: {$e->getMessage()}" . PHP_EOL);
++
++            continue 1;
+         }
+     }
+ 
+     // 2. Check for new data in the log file to send to client
+-    clearstatcache();
+-    $currentSize = filesize($logFile);
+-    if ($currentSize > $lastSize) {
+-        $fh = fopen($logFile, "r");
++    try {
++        clearstatcache();
+ 
+-        fseek($fh, $lastSize); // jump to where we left off
++        $currentSize = filesize($logFile);
+ 
+-        // Load the user map
+-        $userMap = json_decode(file_get_contents($userMapFile), true) ?? [];
++        // Avoid sending backlog at startup before receiving input
++        if ($lastSize === 0) {
++            echo json_encode(["status" => "connected"]) . PHP_EOL;
+ 
+-        while (($line = fgets($fh)) !== false) {
+-            $entry = json_decode(trim($line), true);
++            flush();
+ 
+-            if (!is_array($entry)) continue;
++            $lastSize = $currentSize;
+ 
+-            // Restore receiver_name from userMap
+-            if (isset($entry["receiver_id"])) {
+-                $entry["receiver_name"] =
+-                    $userMap[(string)($entry["receiver_id"] ?? "")] ?? "";
++            continue 1;
++        }
+ 
+-                if ($entry["receiver_name"] === "") {
+-                    unset($entry["receiver_name"]);
+-                }
+-            }
++        if ($currentSize > $lastSize) {
++            if ($fh = fopen($logFile, "r")) {
+ 
+-            // Restore sender_name from userMap
+-            $entry["sender_name"] =
+-                $userMap[(string)($entry["sender_id"] ?? "")] ?? "guest";
++                fseek($fh, $lastSize); // jump to where we left off
+ 
+-            echo json_encode($entry) . PHP_EOL;
++                while (($line = fgets($fh)) !== false) {
++                    $entry = json_decode(trim($line), true);
+ 
+-            flush();
+-            fflush(STDOUT);
+-        }
++                    if (!is_array($entry)) continue 1;
+ 
+-        fclose($fh);
++                    // Restore {receiver,sender}_name from userMap
++                    restoreNameFromUserMap($entry, $userMap);
++                }
++
++                fclose($fh);
++            }
+ 
+-        $lastSize = $currentSize;
++            $lastSize = $currentSize;
++        }
++    } catch (Throwable $e) {
++        /*
++         * Catch errors during log file monitoring
++         * (read failures, decoding, etc.)
++         * and continue watching for new entries
++         * without crashing the main loop.
++         */
++        fwrite(STDERR, "Log read error: {$e->getMessage()}" . PHP_EOL);
++
++        continue 1;
+     }
++
++    // Prevent tight loop if there's no input or new data
++    usleep(100000);
+ }
