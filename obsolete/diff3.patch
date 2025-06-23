@@ -1,0 +1,93 @@
+--- simplefile.php	2025-05-08 20:17:20.917463799 -0300
++++ simplefile_bad1.php	2025-05-08 20:18:50.447642002 -0300
+@@ -68,6 +68,32 @@
+ $stdin = fopen("php://stdin", "r");
+ stream_set_blocking($stdin, false);
+ 
++function restoreNameFromUserMap(array $entry, array $userMap): void {
++    // Restore receiver_name from userMap
++    if (isset($userMap[(string)($entry["receiver_id"] ?? "")])) {
++        $entry["receiver_name"] =
++            $userMap[(string)$entry["receiver_id"]];
++    }
++
++    // Restore sender_name from userMap
++    $entry["sender_name"] =
++        $userMap[(string)($entry["sender_id"] ?? "")] ?? "guest";
++
++    $json = json_encode($entry);
++
++    if ($json !== false) {
++        echo $json . PHP_EOL;
++
++        flush();
++        fflush(STDOUT);
++    } else {
++        fwrite(
++            STDERR,
++            "JSON encode error (output): " . json_last_error_msg() . PHP_EOL
++        );
++    }
++}
++
+ // Main loop
+ while (true) {
+     // 1. Check for new input from client (WebSocket)
+@@ -266,26 +292,8 @@
+                             LOCK_EX
+                         );
+ 
+-                        // Restore receiver_name from userMap
+-                        if (isset($entry["receiver_id"])) {
+-                            $entry["receiver_name"] =
+-                                $userMap[(string)($entry["receiver_id"] ?? "")]
+-                                ?? "";
+-
+-                            if ($entry["receiver_name"] === "") {
+-                                unset($entry["receiver_name"]);
+-                            }
+-                        }
+-
+-                        // Restore sender_name from userMap
+-                        $entry["sender_name"] =
+-                            $userMap[(string)($entry["sender_id"] ?? "")]
+-                            ?? "guest";
+-
+-                        echo json_encode($entry) . PHP_EOL;
+-
+-                        flush();
+-                        fflush(STDOUT);
++                        // Restore {receiver,sender}_name from userMap
++                        restoreNameFromUserMap($entry, $userMap);
+                     }
+                 }
+ 
+@@ -319,26 +327,8 @@
+ 
+                     if (!is_array($entry)) continue 1;
+ 
+-                    // Restore receiver_name from userMap
+-                    if (isset($entry["receiver_id"])) {
+-                        $entry["receiver_name"] =
+-                            $userMap[(string)($entry["receiver_id"] ?? "")]
+-                            ?? "";
+-
+-                        if ($entry["receiver_name"] === "") {
+-                            unset($entry["receiver_name"]);
+-                        }
+-                    }
+-
+-                    // Restore sender_name from userMap
+-                    $entry["sender_name"] =
+-                        $userMap[(string)($entry["sender_id"] ?? "")]
+-                        ?? "guest";
+-
+-                    echo json_encode($entry) . PHP_EOL;
+-
+-                    flush();
+-                    fflush(STDOUT);
++                    // Restore {receiver,sender}_name from userMap
++                    restoreNameFromUserMap($entry, $userMap);
+                 }
+ 
+                 fclose($fh);

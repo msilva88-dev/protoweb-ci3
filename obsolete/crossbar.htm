@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WAMP Test</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/autobahn/22.10.1/autobahn.min.js"></script>
+</head>
+<body>
+    <h1>WAMP Test</h1>
+    <div id="output"></div>
+    <button id="publish">Publish Message</button>
+
+    <script>
+        const wsUrl = "ws://172.27.0.3:8080/ws"; // Adjust URL as needed
+        const realm = "realm1";
+        const testTopic = "com.test.topic";
+
+        const connection = new autobahn.Connection({ url: wsUrl, realm: realm });
+
+        connection.onopen = function (session) {
+            console.log("Connected to WAMP server");
+            document.getElementById("output").innerHTML += "<p>Connected to WAMP server</p>";
+
+            // Subscribe to a topic
+            session.subscribe(testTopic, function (args, kwargs, details) {
+                console.log("Message received:", args, kwargs, details);
+                document.getElementById("output").innerHTML += `<p>Received message: ${args[0]}</p>`;
+            }).then(
+                function (subscription) {
+                    console.log("Subscribed to topic:", subscription.topic);
+                    document.getElementById("output").innerHTML += `<p>Subscribed to topic: ${subscription.topic}</p>`;
+                },
+                function (error) {
+                    console.error("Subscription failed:", error);
+                    document.getElementById("output").innerHTML += `<p>Subscription failed: ${error.message}</p>`;
+                }
+            );
+
+            // Publish a test message
+            document.getElementById("publish").addEventListener("click", function () {
+                const message = "Hello from client!";
+                console.log("Publishing message:", message);
+
+                session.publish(testTopic, [message]).then(
+                    function () {
+                        console.log("Message published successfully");
+                        document.getElementById("output").innerHTML += "<p>Message published successfully</p>";
+                    },
+                    function (error) {
+                        console.error("Failed to publish message:", error);
+                        document.getElementById("output").innerHTML += `<p>Failed to publish message: ${error.message}</p>`;
+                    }
+                );
+            });
+        };
+
+        connection.onclose = function (reason, details) {
+            console.log("Connection closed:", reason, details);
+            document.getElementById("output").innerHTML += `<p>Connection closed: ${reason}</p>`;
+        };
+
+        connection.open();
+    </script>
+</body>
+</html>

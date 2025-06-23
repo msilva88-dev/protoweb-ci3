@@ -1,0 +1,21 @@
+if ($this->action === "insert") {
+  $this->dataBaseObj->setMsgEntry($this->jsonDecoded);
+  if ($this->dataBaseObj->insertMsgEntry()) $this->dataBaseObj->printAllMsgEntries();
+} elseif ($this->action === "update") {
+  $this->dataBaseObj->setMsgEntry($this->jsonDecoded);
+  if ($this->dataBaseObj->updateMsgEntry()) $this->dataBaseObj->printMsgEntry();}
+$this->dataBaseObj->printAllMsgEntries();
+final public function insertMsgEntry(): bool {
+  if ($this->validateInsertMsgEntry()) {
+    $this->normalizeReceiverIdFromMsgEntry();
+    if (!$this->selectUserDataFromDB()) $this->insertUserDataToDB();
+    return $this->insertMsgEntryToDB();
+  } else return false;}
+final public function printAllMsgEntries(): bool {
+  return $this->printAllJsonMsgsFromDB();}
+final public function updateMsgEntry(): bool {
+  if ($this->validateUpdateMsgEntry()) return $this->updateMsgEntryToDB();
+  return false;}
+final public function printMsgEntry(): bool {
+  $this->restoreUserNameFromUserData();
+  return $this->printJsonMsgFromMsgEntry();}
